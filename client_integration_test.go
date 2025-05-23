@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 package wgctrl_test
 
 import (
@@ -369,7 +372,6 @@ func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Dev
 			// TODO(stv0g): remove as soon as the FreeBSD kernel module supports it
 			t.Skip("FreeBSD kernel devices do not support UpdateOnly flag")
 		}
-
 
 		t.Fatalf("failed to configure second time on %q: %v", d.Name, err)
 	}

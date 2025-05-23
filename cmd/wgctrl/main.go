@@ -1,3 +1,6 @@
+//go:build linux
+// +build linux
+
 // Command wgctrl is a testing utility for interacting with WireGuard via package
 // wgctrl.
 package main

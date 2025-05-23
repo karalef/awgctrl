@@ -1,3 +1,14 @@
+//go:build linux
+// +build linux
+
+// Package wgctrl enables control of WireGuard devices on multiple platforms.
+//
+// For more information on WireGuard, please see https://www.wireguard.com/.
+//
+// This package implements WireGuard configuration protocol operations, enabling
+// the configuration of existing WireGuard devices. Operations such as creating
+// WireGuard devices, or applying IP addresses to those devices, are out of scope
+// for this package.
 package wgctrl
 
 import (
@@ -5,6 +16,8 @@ import (
 	"os"
 
 	"golang.zx2c4.com/wireguard/wgctrl/internal/wginternal"
+	"golang.zx2c4.com/wireguard/wgctrl/internal/wglinux"
+	"golang.zx2c4.com/wireguard/wgctrl/internal/wguser"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
@@ -28,6 +41,32 @@ func New() (*Client, error) {
 	return &Client{
 		cs: cs,
 	}, nil
+}
+
+// newClients configures wginternal.Clients for Linux systems.
+func newClients() ([]wginternal.Client, error) {
+	var clients []wginternal.Client
+
+	// Linux has an in-kernel WireGuard implementation. Determine if it is
+	// available and make use of it if so.
+	kc, ok, err := wglinux.New()
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		clients = append(clients, kc)
+	}
+
+	// Although it isn't recommended to use userspace implementations on Linux,
+	// it can be used. We make use of it in integration tests as well.
+	uc, err := wguser.New()
+	if err != nil {
+		return nil, err
+	}
+
+	// Kernel devices seem to appear first in wg(8).
+	clients = append(clients, uc)
+	return clients, nil
 }
 
 // Close releases resources used by a Client.
