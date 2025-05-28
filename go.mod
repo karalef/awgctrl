@@ -1,6 +1,6 @@
-module golang.zx2c4.com/wireguard/wgctrl
+module github.com/karalef/awgctrl
 
-go 1.20
+go 1.24
 
 require (
 	github.com/google/go-cmp v0.6.0
@@ -9,7 +9,6 @@ require (
 	github.com/mikioh/ipaddr v0.0.0-20190404000644-d465c8ab6721
 	golang.org/x/crypto v0.31.0
 	golang.org/x/sys v0.28.0
-	golang.zx2c4.com/wireguard v0.0.0-20231211153847-12269c276173
 )
 
 require (

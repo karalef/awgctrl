@@ -12,20 +12,19 @@ import (
 	"net"
 	"strings"
 
-	"golang.zx2c4.com/wireguard/wgctrl"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"github.com/karalef/awgctrl"
 )
 
 func main() {
 	flag.Parse()
 
-	c, err := wgctrl.New()
+	c, _, err := awgctrl.New()
 	if err != nil {
 		log.Fatalf("failed to open wgctrl: %v", err)
 	}
 	defer c.Close()
 
-	var devices []*wgtypes.Device
+	var devices []*awgctrl.Device
 	if device := flag.Arg(0); device != "" {
 		d, err := c.Device(device)
 		if err != nil {
@@ -49,7 +48,7 @@ func main() {
 	}
 }
 
-func printDevice(d *wgtypes.Device) {
+func printDevice(d *awgctrl.Device) {
 	const f = `interface: %s (%s)
   public key: %s
   private key: (hidden)
@@ -60,12 +59,11 @@ func printDevice(d *wgtypes.Device) {
 	fmt.Printf(
 		f,
 		d.Name,
-		d.Type.String(),
 		d.PublicKey.String(),
 		d.ListenPort)
 }
 
-func printPeer(p wgtypes.Peer) {
+func printPeer(p awgctrl.Peer) {
 	const f = `peer: %s
   endpoint: %s
   allowed ips: %s

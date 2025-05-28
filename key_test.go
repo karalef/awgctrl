@@ -1,13 +1,12 @@
-package wgtypes_test
+package awgctrl_test
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/karalef/awgctrl"
 	"golang.org/x/crypto/curve25519"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func TestPreparedKeys(t *testing.T) {
@@ -18,7 +17,7 @@ func TestPreparedKeys(t *testing.T) {
 		public  = "aPxGwq8zERHQ3Q1cOZFdJ+cvJX5Ka4mLN38AyYKYF10="
 	)
 
-	priv, err := wgtypes.ParseKey(private)
+	priv, err := awgctrl.ParseKey(private)
 	if err != nil {
 		t.Fatalf("failed to parse private key: %v", err)
 	}
@@ -34,8 +33,8 @@ func TestPreparedKeys(t *testing.T) {
 }
 
 func TestKeyExchange(t *testing.T) {
-	privA, pubA := mustKeyPair()
-	privB, pubB := mustKeyPair()
+	privA, pubA := keyPair()
+	privB, pubB := keyPair()
 
 	// Perform ECDH key exchange: https://cr.yp.to/ecdh.html.
 	sharedA, err := curve25519.X25519(privA[:], pubB[:])
@@ -54,14 +53,14 @@ func TestKeyExchange(t *testing.T) {
 
 func TestBadKeys(t *testing.T) {
 	// Adapt to fit the signature used in the test table.
-	parseKey := func(b []byte) (wgtypes.Key, error) {
-		return wgtypes.ParseKey(string(b))
+	parseKey := func(b []byte) (awgctrl.Key, error) {
+		return awgctrl.ParseKey(string(b))
 	}
 
 	tests := []struct {
 		name string
 		b    []byte
-		fn   func(b []byte) (wgtypes.Key, error)
+		fn   func(b []byte) (awgctrl.Key, error)
 	}{
 		{
 			name: "bad base64",
@@ -76,7 +75,7 @@ func TestBadKeys(t *testing.T) {
 		{
 			name: "short key",
 			b:    []byte("xxx"),
-			fn:   wgtypes.NewKey,
+			fn:   awgctrl.NewKey,
 		},
 		{
 			name: "long base64",
@@ -86,7 +85,7 @@ func TestBadKeys(t *testing.T) {
 		{
 			name: "long bytes",
 			b:    bytes.Repeat([]byte{0xff}, 40),
-			fn:   wgtypes.NewKey,
+			fn:   awgctrl.NewKey,
 		},
 	}
 
@@ -102,20 +101,12 @@ func TestBadKeys(t *testing.T) {
 	}
 }
 
-func mustKeyPair() (private, public *[32]byte) {
-	priv, err := wgtypes.GeneratePrivateKey()
-	if err != nil {
-		panicf("failed to generate private key: %v", err)
-	}
-
+func keyPair() (private, public *[32]byte) {
+	priv := awgctrl.GeneratePrivateKey()
 	return keyPtr(priv), keyPtr(priv.PublicKey())
 }
 
-func keyPtr(k wgtypes.Key) *[32]byte {
+func keyPtr(k awgctrl.Key) *[32]byte {
 	b32 := [32]byte(k)
 	return &b32
-}
-
-func panicf(format string, a ...interface{}) {
-	panic(fmt.Sprintf(format, a...))
 }

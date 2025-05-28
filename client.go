@@ -1,78 +1,138 @@
 //go:build linux
 // +build linux
 
-// Package wgctrl enables control of WireGuard devices on multiple platforms.
-//
-// For more information on WireGuard, please see https://www.wireguard.com/.
-//
-// This package implements WireGuard configuration protocol operations, enabling
-// the configuration of existing WireGuard devices. Operations such as creating
-// WireGuard devices, or applying IP addresses to those devices, are out of scope
-// for this package.
-package wgctrl
+// package awgctrl provides internal access to Linux's WireGuard generic
+// netlink interface.
+package awgctrl
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"syscall"
 
-	"golang.zx2c4.com/wireguard/wgctrl/internal/wginternal"
-	"golang.zx2c4.com/wireguard/wgctrl/internal/wglinux"
-	"golang.zx2c4.com/wireguard/wgctrl/internal/wguser"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
+	"github.com/mdlayher/genetlink"
+	"github.com/mdlayher/netlink"
+	"github.com/mdlayher/netlink/nlenc"
+	"golang.org/x/sys/unix"
 )
 
-// Expose an identical interface to the underlying packages.
-var _ wginternal.Client = &Client{}
-
-// A Client provides access to WireGuard device information.
+// A Client provides access to Linux WireGuard netlink information.
 type Client struct {
-	// Seamlessly use different wginternal.Client implementations to provide an
-	// interface similar to wg(8).
-	cs []wginternal.Client
+	c      *genetlink.Conn
+	family genetlink.Family
+
+	interfaces func() ([]string, error)
 }
 
-// New creates a new Client.
-func New() (*Client, error) {
-	cs, err := newClients()
+// New creates a new Client and returns whether or not the generic netlink
+// interface is available.
+func New() (*Client, bool, error) {
+	c, err := genetlink.Dial(nil)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+
+	// Best effort version of netlink.Config.Strict due to CentOS 7.
+	for _, o := range []netlink.ConnOption{
+		netlink.ExtendedAcknowledge,
+		netlink.GetStrictCheck,
+	} {
+		_ = c.SetOption(o, true)
+	}
+
+	return initClient(c)
+}
+
+// initClient is the internal Client constructor used in some tests.
+func initClient(c *genetlink.Conn) (*Client, bool, error) {
+	f, err := c.GetFamily(unix.WG_GENL_NAME)
+	if err != nil {
+		_ = c.Close()
+
+		if errors.Is(err, os.ErrNotExist) {
+			// The generic netlink interface is not available.
+			return nil, false, nil
+		}
+
+		return nil, false, err
 	}
 
 	return &Client{
-		cs: cs,
-	}, nil
+		c:      c,
+		family: f,
+
+		// By default, gather only WireGuard interfaces using rtnetlink.
+		interfaces: rtnlInterfaces,
+	}, true, nil
 }
 
-// newClients configures wginternal.Clients for Linux systems.
-func newClients() ([]wginternal.Client, error) {
-	var clients []wginternal.Client
+// Close closes the connection.
+func (c *Client) Close() error { return c.c.Close() }
 
-	// Linux has an in-kernel WireGuard implementation. Determine if it is
-	// available and make use of it if so.
-	kc, ok, err := wglinux.New()
+// Devices returns a list of WireGuard devices.
+func (c *Client) Devices() ([]*Device, error) {
+	// By default, rtnetlink is used to fetch a list of all interfaces and then
+	// filter that list to only find WireGuard interfaces.
+	//
+	// The remainder of this function assumes that any returned device from this
+	// function is a valid WireGuard device.
+	ifis, err := c.interfaces()
 	if err != nil {
 		return nil, err
 	}
-	if ok {
-		clients = append(clients, kc)
+
+	ds := make([]*Device, 0, len(ifis))
+	for _, ifi := range ifis {
+		d, err := c.Device(ifi)
+		if err != nil {
+			return nil, err
+		}
+
+		ds = append(ds, d)
 	}
 
-	// Although it isn't recommended to use userspace implementations on Linux,
-	// it can be used. We make use of it in integration tests as well.
-	uc, err := wguser.New()
+	return ds, nil
+}
+
+// Device implements wginternal.Client.
+func (c *Client) Device(name string) (*Device, error) {
+	// Don't bother querying netlink with empty input.
+	if name == "" {
+		return nil, os.ErrNotExist
+	}
+
+	// Fetching a device by interface index is possible as well, but we only
+	// support fetching by name as it seems to be more convenient in general.
+	b, err := netlink.MarshalAttributes([]netlink.Attribute{{
+		Type: unix.WGDEVICE_A_IFNAME,
+		Data: nlenc.Bytes(name),
+	}})
 	if err != nil {
 		return nil, err
 	}
 
-	// Kernel devices seem to appear first in wg(8).
-	clients = append(clients, uc)
-	return clients, nil
+	msgs, err := c.execute(unix.WG_CMD_GET_DEVICE, netlink.Request|netlink.Dump, b)
+	if err != nil {
+		return nil, err
+	}
+
+	return parseDevice(msgs)
 }
 
-// Close releases resources used by a Client.
-func (c *Client) Close() error {
-	for _, wgc := range c.cs {
-		if err := wgc.Close(); err != nil {
+// ConfigureDevice configures a WireGuard device.
+func (c *Client) ConfigureDevice(name string, cfg Config) error {
+	// Large configurations are split into batches for use with netlink.
+	for _, b := range cfg.buildBatches() {
+		attrs, err := b.attrs(name)
+		if err != nil {
+			return err
+		}
+
+		// Request acknowledgement of our request from netlink, even though the
+		// output messages are unused.  The netlink package checks and trims the
+		// status code value.
+		if _, err := c.execute(unix.WG_CMD_SET_DEVICE, netlink.Request|netlink.Acknowledge, attrs); err != nil {
 			return err
 		}
 	}
@@ -80,61 +140,129 @@ func (c *Client) Close() error {
 	return nil
 }
 
-// Devices retrieves all WireGuard devices on this system.
-func (c *Client) Devices() ([]*wgtypes.Device, error) {
-	var out []*wgtypes.Device
-	for _, wgc := range c.cs {
-		devs, err := wgc.Devices()
+// execute executes a single WireGuard netlink request with the specified command,
+// header flags, and attribute arguments.
+func (c *Client) execute(command uint8, flags netlink.HeaderFlags, attrb []byte) ([]genetlink.Message, error) {
+	msg := genetlink.Message{
+		Header: genetlink.Header{
+			Command: command,
+			Version: unix.WG_GENL_VERSION,
+		},
+		Data: attrb,
+	}
+
+	msgs, err := c.c.Execute(msg, c.family.ID, flags)
+	if err == nil {
+		return msgs, nil
+	}
+
+	// We don't want to expose netlink errors directly to callers so unpack to
+	// something more generic.
+	oerr, ok := err.(*netlink.OpError)
+	if !ok {
+		// Expect all errors to conform to netlink.OpError.
+		return nil, fmt.Errorf("wglinux: netlink operation returned non-netlink error (please file a bug: https://golang.zx2c4.com/wireguard/wgctrl): %v", err)
+	}
+
+	switch oerr.Err {
+	// Convert "no such device" and "not a wireguard device" to an error
+	// compatible with os.ErrNotExist for easy checking.
+	case unix.ENODEV, unix.ENOTSUP:
+		return nil, os.ErrNotExist
+	default:
+		// Expose the inner error directly (such as EPERM).
+		return nil, oerr.Err
+	}
+}
+
+// rtnlInterfaces uses rtnetlink to fetch a list of WireGuard interfaces.
+func rtnlInterfaces() ([]string, error) {
+	// Use the stdlib's rtnetlink helpers to get ahold of a table of all
+	// interfaces, so we can begin filtering it down to just WireGuard devices.
+	tab, err := syscall.NetlinkRIB(unix.RTM_GETLINK, unix.AF_UNSPEC)
+	if err != nil {
+		return nil, fmt.Errorf("wglinux: failed to get list of interfaces from rtnetlink: %v", err)
+	}
+
+	msgs, err := syscall.ParseNetlinkMessage(tab)
+	if err != nil {
+		return nil, fmt.Errorf("wglinux: failed to parse rtnetlink messages: %v", err)
+	}
+
+	return parseRTNLInterfaces(msgs)
+}
+
+// parseRTNLInterfaces unpacks rtnetlink messages and returns WireGuard
+// interface names.
+func parseRTNLInterfaces(msgs []syscall.NetlinkMessage) ([]string, error) {
+	var ifis []string
+	for _, m := range msgs {
+		// Only deal with link messages, and they must have an ifinfomsg
+		// structure appear before the attributes.
+		if m.Header.Type != unix.RTM_NEWLINK {
+			continue
+		}
+
+		if len(m.Data) < unix.SizeofIfInfomsg {
+			return nil, fmt.Errorf("wglinux: rtnetlink message is too short for ifinfomsg: %d", len(m.Data))
+		}
+
+		ad, err := netlink.NewAttributeDecoder(m.Data[syscall.SizeofIfInfomsg:])
 		if err != nil {
 			return nil, err
 		}
 
-		out = append(out, devs...)
-	}
+		// Determine the interface's name and if it's a WireGuard device.
+		var (
+			ifi  string
+			isWG bool
+		)
 
-	return out, nil
-}
+		for ad.Next() {
+			switch ad.Type() {
+			case unix.IFLA_IFNAME:
+				ifi = ad.String()
+			case unix.IFLA_LINKINFO:
+				ad.Do(isWGKind(&isWG))
+			}
+		}
 
-// Device retrieves a WireGuard device by its interface name.
-//
-// If the device specified by name does not exist or is not a WireGuard device,
-// an error is returned which can be checked using `errors.Is(err, os.ErrNotExist)`.
-func (c *Client) Device(name string) (*wgtypes.Device, error) {
-	for _, wgc := range c.cs {
-		d, err := wgc.Device(name)
-		switch {
-		case err == nil:
-			return d, nil
-		case errors.Is(err, os.ErrNotExist):
-			continue
-		default:
+		if err := ad.Err(); err != nil {
 			return nil, err
 		}
-	}
 
-	return nil, os.ErrNotExist
-}
-
-// ConfigureDevice configures a WireGuard device by its interface name.
-//
-// Because the zero value of some Go types may be significant to WireGuard for
-// Config fields, only fields which are not nil will be applied when
-// configuring a device.
-//
-// If the device specified by name does not exist or is not a WireGuard device,
-// an error is returned which can be checked using `errors.Is(err, os.ErrNotExist)`.
-func (c *Client) ConfigureDevice(name string, cfg wgtypes.Config) error {
-	for _, wgc := range c.cs {
-		err := wgc.ConfigureDevice(name, cfg)
-		switch {
-		case err == nil:
-			return nil
-		case errors.Is(err, os.ErrNotExist):
-			continue
-		default:
-			return err
+		if isWG {
+			// Found one; append it to the list.
+			ifis = append(ifis, ifi)
 		}
 	}
 
-	return os.ErrNotExist
+	return ifis, nil
+}
+
+// wgKind is the IFLA_INFO_KIND value for WireGuard devices.
+const wgKind = "wireguard"
+
+// isWGKind parses netlink attributes to determine if a link is a WireGuard
+// device, then populates ok with the result.
+func isWGKind(ok *bool) func(b []byte) error {
+	return func(b []byte) error {
+		ad, err := netlink.NewAttributeDecoder(b)
+		if err != nil {
+			return err
+		}
+
+		for ad.Next() {
+			if ad.Type() != unix.IFLA_INFO_KIND {
+				continue
+			}
+
+			if ad.String() == wgKind {
+				*ok = true
+				return nil
+			}
+		}
+
+		return ad.Err()
+	}
 }

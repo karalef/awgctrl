@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package wgctrl_test
+package awgctrl
 
 import (
 	"bytes"
@@ -16,10 +16,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/mikioh/ipaddr"
-	"golang.zx2c4.com/wireguard/wgctrl"
-	"golang.zx2c4.com/wireguard/wgctrl/internal/wginternal"
-	"golang.zx2c4.com/wireguard/wgctrl/internal/wgtest"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 func TestIntegrationClient(t *testing.T) {
@@ -36,7 +32,7 @@ func TestIntegrationClient(t *testing.T) {
 
 	tests := []struct {
 		name string
-		fn   func(t *testing.T, c *wgctrl.Client, d *wgtypes.Device)
+		fn   func(t *testing.T, c *Client, d *Device)
 	}{
 		{
 			name: "get",
@@ -60,7 +56,7 @@ func TestIntegrationClient(t *testing.T) {
 		},
 		{
 			name: "reset",
-			fn: func(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+			fn: func(t *testing.T, c *Client, d *Device) {
 				// Reset device several times; this used to cause a hang in
 				// wireguard-go in late 2018.
 				for i := 0; i < 10; i++ {
@@ -102,7 +98,7 @@ func TestIntegrationClientIsNotExist(t *testing.T) {
 	}
 }
 
-func integrationClient(t *testing.T) (*wgctrl.Client, func()) {
+func integrationClient(t *testing.T) (*Client, func()) {
 	t.Helper()
 
 	const (
@@ -115,7 +111,7 @@ func integrationClient(t *testing.T) (*wgctrl.Client, func()) {
 			env, confirm)
 	}
 
-	c, err := wgctrl.New()
+	c, _, err := New()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			t.Skip("skipping, wgctrl is not available on this system")
@@ -131,7 +127,7 @@ func integrationClient(t *testing.T) (*wgctrl.Client, func()) {
 	}
 }
 
-func testGet(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func testGet(t *testing.T, c *Client, d *Device) {
 	t.Logf("device: %s: %s", d.Name, d.PublicKey.String())
 
 	dn, err := c.Device(d.Name)
@@ -144,25 +140,25 @@ func testGet(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 	}
 }
 
-func testConfigure(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func testConfigure(t *testing.T, c *Client, d *Device) {
 	var (
-		port = 8888
+		port = uint16(8888)
 		ips  = []net.IPNet{
-			wgtest.MustCIDR("192.0.2.0/32"),
-			wgtest.MustCIDR("2001:db8::/128"),
+			mustCIDR("192.0.2.0/32"),
+			mustCIDR("2001:db8::/128"),
 		}
 
-		priv    = wgtest.MustPrivateKey()
-		peerKey = wgtest.MustPublicKey()
+		priv    = GeneratePrivateKey()
+		peerKey = GeneratePrivateKey().PublicKey()
 	)
 
 	t.Logf("before: %s: %s", d.Name, d.PublicKey.String())
 
-	cfg := wgtypes.Config{
+	cfg := Config{
 		PrivateKey:   &priv,
 		ListenPort:   &port,
 		ReplacePeers: true,
-		Peers: []wgtypes.PeerConfig{{
+		Peers: []PeerConfig{{
 			PublicKey:         peerKey,
 			ReplaceAllowedIPs: true,
 			AllowedIPs:        ips,
@@ -178,13 +174,12 @@ func testConfigure(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 
 	// Now that a new configuration has been applied, update our initial
 	// device for comparison.
-	*d = wgtypes.Device{
+	*d = Device{
 		Name:       d.Name,
-		Type:       d.Type,
 		PrivateKey: priv,
 		PublicKey:  priv.PublicKey(),
 		ListenPort: port,
-		Peers: []wgtypes.Peer{{
+		Peers: []Peer{{
 			PublicKey:         peerKey,
 			LastHandshakeTime: time.Time{},
 			AllowedIPs:        ips,
@@ -214,11 +209,11 @@ func testConfigure(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 	t.Log(out)
 }
 
-func testConfigureManyIPs(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func testConfigureManyIPs(t *testing.T, c *Client, d *Device) {
 	// Apply 511 IPs per peer.
 	var (
 		countIPs int
-		peers    []wgtypes.PeerConfig
+		peers    []PeerConfig
 	)
 
 	for i := 0; i < 2; i++ {
@@ -245,8 +240,8 @@ func testConfigureManyIPs(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 			})
 		}
 
-		peers = append(peers, wgtypes.PeerConfig{
-			PublicKey:         wgtest.MustPublicKey(),
+		peers = append(peers, PeerConfig{
+			PublicKey:         GeneratePrivateKey().PublicKey(),
 			ReplaceAllowedIPs: true,
 			AllowedIPs:        ips,
 		})
@@ -254,7 +249,7 @@ func testConfigureManyIPs(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 		countIPs += len(ips)
 	}
 
-	cfg := wgtypes.Config{
+	cfg := Config{
 		ReplacePeers: true,
 		Peers:        peers,
 	}
@@ -274,23 +269,23 @@ func testConfigureManyIPs(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 	t.Logf("device: %s: %d IPs", d.Name, peerIPs)
 }
 
-func testConfigureManyPeers(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func testConfigureManyPeers(t *testing.T, c *Client, d *Device) {
 	const (
 		nPeers  = 256
 		peerIPs = 512
 	)
 
-	var peers []wgtypes.PeerConfig
+	var peers []PeerConfig
 	for i := 0; i < nPeers; i++ {
 		var (
-			pk  = wgtest.MustPresharedKey()
+			pk  = GenerateKey()
 			dur = 10 * time.Second
 		)
 
 		ips := generateIPs((i + 1) * 2)
 
-		peers = append(peers, wgtypes.PeerConfig{
-			PublicKey:         wgtest.MustPublicKey(),
+		peers = append(peers, PeerConfig{
+			PublicKey:         GeneratePrivateKey().PublicKey(),
 			PresharedKey:      &pk,
 			ReplaceAllowedIPs: true,
 			Endpoint: &net.UDPAddr{
@@ -302,15 +297,12 @@ func testConfigureManyPeers(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 		})
 	}
 
-	var (
-		priv = wgtest.MustPrivateKey()
-		n    = 0
-	)
+	priv := GeneratePrivateKey()
 
-	cfg := wgtypes.Config{
+	cfg := Config{
 		PrivateKey:   &priv,
-		ListenPort:   &n,
-		FirewallMark: &n,
+		ListenPort:   new(uint16),
+		FirewallMark: new(uint32),
 		ReplacePeers: true,
 		Peers:        peers,
 	}
@@ -334,16 +326,16 @@ func testConfigureManyPeers(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 	t.Logf("device: %s: %d peers, %d IPs", d.Name, len(dn.Peers), countIPs)
 }
 
-func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func testConfigurePeersUpdateOnly(t *testing.T, c *Client, d *Device) {
 	var (
-		peerA = wgtest.MustPublicKey()
-		peerB = wgtest.MustPublicKey()
-		psk   = wgtest.MustPresharedKey()
+		peerA = GeneratePrivateKey().PublicKey()
+		peerB = GeneratePrivateKey().PublicKey()
+		psk   = GenerateKey()
 	)
 
 	// Create an initial peer configuration.
-	cfg := wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{{
+	cfg := Config{
+		Peers: []PeerConfig{{
 			PublicKey: peerA,
 		}},
 	}
@@ -352,8 +344,8 @@ func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Dev
 
 	// Create an updated configuration that should only apply to the existing
 	// peer due to update only flags.
-	cfg = wgtypes.Config{
-		Peers: []wgtypes.PeerConfig{
+	cfg = Config{
+		Peers: []PeerConfig{
 			{
 				PublicKey:    peerA,
 				UpdateOnly:   true,
@@ -368,11 +360,6 @@ func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Dev
 	}
 
 	if err := c.ConfigureDevice(d.Name, cfg); err != nil {
-		if d.Type == wgtypes.FreeBSDKernel && err == wgtypes.ErrUpdateOnlyNotSupported {
-			// TODO(stv0g): remove as soon as the FreeBSD kernel module supports it
-			t.Skip("FreeBSD kernel devices do not support UpdateOnly flag")
-		}
-
 		t.Fatalf("failed to configure second time on %q: %v", d.Name, err)
 	}
 
@@ -381,7 +368,7 @@ func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Dev
 		t.Fatalf("failed to get updated device: %v", err)
 	}
 
-	want := []wgtypes.Peer{{
+	want := []Peer{{
 		PublicKey:       peerA,
 		PresharedKey:    psk,
 		ProtocolVersion: 1,
@@ -392,15 +379,14 @@ func testConfigurePeersUpdateOnly(t *testing.T, c *wgctrl.Client, d *wgtypes.Dev
 	}
 }
 
-func resetDevice(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
+func resetDevice(t *testing.T, c *Client, d *Device) {
 	t.Helper()
 
-	zero := 0
-	cfg := wgtypes.Config{
+	cfg := Config{
 		// Clear device config.
-		PrivateKey:   &wgtypes.Key{},
-		ListenPort:   &zero,
-		FirewallMark: &zero,
+		PrivateKey:   &Key{},
+		ListenPort:   new(uint16),
+		FirewallMark: new(uint32),
 
 		// Clear all peers.
 		ReplacePeers: true,
@@ -409,19 +395,15 @@ func resetDevice(t *testing.T, c *wgctrl.Client, d *wgtypes.Device) {
 	tryConfigure(t, c, d.Name, cfg)
 }
 
-func tryConfigure(t *testing.T, c *wgctrl.Client, device string, cfg wgtypes.Config) {
+func tryConfigure(t *testing.T, c *Client, device string, cfg Config) {
 	t.Helper()
 
 	if err := c.ConfigureDevice(device, cfg); err != nil {
-		if err == wginternal.ErrReadOnly {
-			t.Skipf("skipping, device %q implementation is read-only", device)
-		}
-
 		t.Fatalf("failed to configure %q: %v", device, err)
 	}
 }
 
-func countPeerIPs(d *wgtypes.Device) int {
+func countPeerIPs(d *Device) int {
 	var count int
 	for _, p := range d.Peers {
 		count += len(p.AllowedIPs)
@@ -437,30 +419,4 @@ func ipsString(ipns []net.IPNet) string {
 	}
 
 	return strings.Join(ss, ", ")
-}
-
-func generateIPs(n int) []net.IPNet {
-	cur, err := ipaddr.Parse("2001:db8::/64")
-	if err != nil {
-		panicf("failed to create cursor: %v", err)
-	}
-
-	ips := make([]net.IPNet, 0, n)
-	for i := 0; i < n; i++ {
-		pos := cur.Next()
-		if pos == nil {
-			panic("hit nil IP during IP generation")
-		}
-
-		ips = append(ips, net.IPNet{
-			IP:   pos.IP,
-			Mask: net.CIDRMask(128, 128),
-		})
-	}
-
-	return ips
-}
-
-func panicf(format string, a ...interface{}) {
-	panic(fmt.Sprintf(format, a...))
 }
