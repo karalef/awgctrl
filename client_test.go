@@ -1298,7 +1298,7 @@ func keyBytes(s string) []byte {
 
 func mustAllowedIPs(ipns []net.IPNet) []byte {
 	ae := netlink.NewAttributeEncoder()
-	if err := encodeAllowedIPs(ipns)(ae); err != nil {
+	if err := encodeAllowedIPs(ae, ipns); err != nil {
 		panicf("failed to create allowed IP attributes: %v", err)
 	}
 

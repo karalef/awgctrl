@@ -48,14 +48,21 @@ func parseDevice(msgs []genetlink.Message) (*Device, error) {
 	knownPeers := make(map[Key]int)
 
 	for i, m := range msgs {
-		d, err := parseDeviceLoop(m)
+		ad, err := netlink.NewAttributeDecoder(m.Data)
 		if err != nil {
+			return nil, err
+		}
+
+		var d Device
+		d.Decode(ad)
+
+		if err = ad.Err(); err != nil {
 			return nil, err
 		}
 
 		if i == 0 {
 			// First message contains our target device.
-			first = *d
+			first = d
 
 			// Gather the known peers so that we can merge
 			// them later if needed
@@ -68,7 +75,7 @@ func parseDevice(msgs []genetlink.Message) (*Device, error) {
 
 		// Any subsequent messages have their peer contents merged into the
 		// first "target" message.
-		mergeDevices(&first, d, knownPeers)
+		mergeDevices(&first, &d, knownPeers)
 	}
 
 	return &first, nil
@@ -146,21 +153,4 @@ func (d *Device) Decode(ad *netlink.AttributeDecoder) {
 			})
 		}
 	}
-}
-
-// parseDeviceLoop parses a Device from a single generic netlink message.
-func parseDeviceLoop(m genetlink.Message) (*Device, error) {
-	ad, err := netlink.NewAttributeDecoder(m.Data)
-	if err != nil {
-		return nil, err
-	}
-
-	d := new(Device)
-	d.Decode(ad)
-
-	if err = ad.Err(); err != nil {
-		return nil, err
-	}
-
-	return d, nil
 }

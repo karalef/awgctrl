@@ -7,19 +7,6 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Additional attribute types added in amneziawg.
-const (
-	WGDEVICE_A_JC   = iota + 1 + unix.WGDEVICE_A_PEERS // uint16
-	WGDEVICE_A_JMIN                                    // uint16
-	WGDEVICE_A_JMAX                                    // uint16
-	WGDEVICE_A_S1                                      // uint16
-	WGDEVICE_A_S2                                      // uint16
-	WGDEVICE_A_H1                                      // uint32
-	WGDEVICE_A_H2                                      // uint32
-	WGDEVICE_A_H3                                      // uint32
-	WGDEVICE_A_H4                                      // uint32
-)
-
 // A Config is a WireGuard device configuration.
 //
 // Because the zero value of some Go types may be significant to WireGuard for
@@ -180,29 +167,25 @@ func (cfg Config) buildBatches() []Config {
 // configAttrs creates the required encoded netlink attributes to configure
 // the device specified by name using the non-nil fields in cfg.
 func (cfg Config) attrs(name string) ([]byte, error) {
-	ae := netlink.NewAttributeEncoder()
+	ae := NewEncoder()
 	ae.String(unix.WGDEVICE_A_IFNAME, name)
 
-	if cfg.PrivateKey != nil {
-		ae.Bytes(unix.WGDEVICE_A_PRIVATE_KEY, cfg.PrivateKey[:])
-	}
-	eUint16(ae, unix.WGDEVICE_A_LISTEN_PORT, cfg.ListenPort)
-	eUint32(ae, unix.WGDEVICE_A_FWMARK, cfg.FirewallMark)
+	ae.Key(unix.WGDEVICE_A_PRIVATE_KEY, cfg.PrivateKey)
+	ae.Uint16(unix.WGDEVICE_A_LISTEN_PORT, cfg.ListenPort)
+	ae.Uint32(unix.WGDEVICE_A_FWMARK, cfg.FirewallMark)
 
 	// amneziawg
-	eUint16(ae, WGDEVICE_A_JC, cfg.JunkCount)
-	eUint16(ae, WGDEVICE_A_JMIN, cfg.JunkMin)
-	eUint16(ae, WGDEVICE_A_JMAX, cfg.JunkMax)
-	eUint16(ae, WGDEVICE_A_S1, cfg.S1)
-	eUint16(ae, WGDEVICE_A_S2, cfg.S2)
-	eUint32(ae, WGDEVICE_A_H1, cfg.H1)
-	eUint32(ae, WGDEVICE_A_H2, cfg.H2)
-	eUint32(ae, WGDEVICE_A_H3, cfg.H3)
-	eUint32(ae, WGDEVICE_A_H4, cfg.H4)
+	ae.Uint16(WGDEVICE_A_JC, cfg.JunkCount)
+	ae.Uint16(WGDEVICE_A_JMIN, cfg.JunkMin)
+	ae.Uint16(WGDEVICE_A_JMAX, cfg.JunkMax)
+	ae.Uint16(WGDEVICE_A_S1, cfg.S1)
+	ae.Uint16(WGDEVICE_A_S2, cfg.S2)
+	ae.Uint32(WGDEVICE_A_H1, cfg.H1)
+	ae.Uint32(WGDEVICE_A_H2, cfg.H2)
+	ae.Uint32(WGDEVICE_A_H3, cfg.H3)
+	ae.Uint32(WGDEVICE_A_H4, cfg.H4)
 
-	if cfg.ReplacePeers {
-		ae.Uint32(unix.WGDEVICE_A_FLAGS, unix.WGDEVICE_F_REPLACE_PEERS)
-	}
+	ae.Flag(unix.WGDEVICE_A_FLAGS, cfg.ReplacePeers, unix.WGDEVICE_F_REPLACE_PEERS)
 
 	// Only apply peer attributes if necessary.
 	if len(cfg.Peers) > 0 {
@@ -217,16 +200,4 @@ func (cfg Config) attrs(name string) ([]byte, error) {
 	}
 
 	return ae.Encode()
-}
-
-func eUint16(ae *netlink.AttributeEncoder, typ uint16, v *uint16) {
-	if v != nil {
-		ae.Uint16(typ, *v)
-	}
-}
-
-func eUint32(ae *netlink.AttributeEncoder, typ uint16, v *uint32) {
-	if v != nil {
-		ae.Uint32(typ, *v)
-	}
 }

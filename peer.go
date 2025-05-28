@@ -132,7 +132,8 @@ type PeerConfig struct {
 }
 
 // Encode encodes the PeerConfig into a netlink format.
-func (p PeerConfig) Encode(ae *netlink.AttributeEncoder) error {
+func (p PeerConfig) Encode(nae *netlink.AttributeEncoder) error {
+	ae := Encoder{nae}
 	ae.Bytes(unix.WGPEER_A_PUBLIC_KEY, p.PublicKey[:])
 
 	// Flags are stored in a single attribute.
@@ -146,94 +147,81 @@ func (p PeerConfig) Encode(ae *netlink.AttributeEncoder) error {
 	if p.UpdateOnly {
 		flags |= unix.WGPEER_F_UPDATE_ONLY
 	}
-	if flags != 0 {
-		ae.Uint32(unix.WGPEER_A_FLAGS, flags)
-	}
 
-	if p.PresharedKey != nil {
-		ae.Bytes(unix.WGPEER_A_PRESHARED_KEY, (*p.PresharedKey)[:])
-	}
+	ae.Flag(unix.WGPEER_A_FLAGS, flags != 0, flags)
+	ae.Key(unix.WGPEER_A_PRESHARED_KEY, p.PresharedKey)
+	ae.Duration(unix.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, p.PersistentKeepaliveInterval)
 
 	if p.Endpoint != nil {
-		ae.Do(unix.WGPEER_A_ENDPOINT, encodeSockaddr(*p.Endpoint))
-	}
-
-	if p.PersistentKeepaliveInterval != nil {
-		ae.Uint16(unix.WGPEER_A_PERSISTENT_KEEPALIVE_INTERVAL, uint16(p.PersistentKeepaliveInterval.Seconds()))
+		ae.Do(unix.WGPEER_A_ENDPOINT, func() ([]byte, error) {
+			return encodeSockaddr(*p.Endpoint)
+		})
 	}
 
 	// Only apply allowed IPs if necessary.
 	if len(p.AllowedIPs) > 0 {
-		ae.Nested(unix.WGPEER_A_ALLOWEDIPS, encodeAllowedIPs(p.AllowedIPs))
+		ae.Nested(unix.WGPEER_A_ALLOWEDIPS, func(nae *netlink.AttributeEncoder) error {
+			return encodeAllowedIPs(nae, p.AllowedIPs)
+		})
 	}
 
 	return nil
 }
 
-// encodeSockaddr returns a function which encodes a net.UDPAddr as raw
-// sockaddr_in or sockaddr_in6 bytes.
-func encodeSockaddr(endpoint net.UDPAddr) func() ([]byte, error) {
-	return func() ([]byte, error) {
-		if !isValidIP(endpoint.IP) {
-			return nil, fmt.Errorf("wglinux: invalid endpoint IP: %s", endpoint.IP.String())
-		}
-
-		// Is this an IPv6 address?
-		if isIPv6(endpoint.IP) {
-			var addr [16]byte
-			copy(addr[:], endpoint.IP.To16())
-
-			sa := unix.RawSockaddrInet6{
-				Family: unix.AF_INET6,
-				Port:   sockaddrPort(endpoint.Port),
-				Addr:   addr,
-			}
-
-			return (*(*[unix.SizeofSockaddrInet6]byte)(unsafe.Pointer(&sa)))[:], nil
-		}
-
-		// IPv4 address handling.
-		var addr [4]byte
-		copy(addr[:], endpoint.IP.To4())
-
-		sa := unix.RawSockaddrInet4{
-			Family: unix.AF_INET,
-			Port:   sockaddrPort(endpoint.Port),
-			Addr:   addr,
-		}
-
-		return (*(*[unix.SizeofSockaddrInet4]byte)(unsafe.Pointer(&sa)))[:], nil
+// encodeSockaddr encodes a net.UDPAddr as raw sockaddr_in or sockaddr_in6
+// bytes.
+func encodeSockaddr(endpoint net.UDPAddr) ([]byte, error) {
+	if !isValidIP(endpoint.IP) {
+		return nil, fmt.Errorf("awgctrl: invalid endpoint IP: %s", endpoint.IP.String())
 	}
+
+	// Is this an IPv6 address?
+	if isIPv6(endpoint.IP) {
+		sa := unix.RawSockaddrInet6{
+			Family: unix.AF_INET6,
+			Port:   sockaddrPort(endpoint.Port),
+		}
+		copy(sa.Addr[:], endpoint.IP.To16())
+
+		return (*(*[unix.SizeofSockaddrInet6]byte)(unsafe.Pointer(&sa)))[:], nil
+	}
+
+	// IPv4 address handling.
+	sa := unix.RawSockaddrInet4{
+		Family: unix.AF_INET,
+		Port:   sockaddrPort(endpoint.Port),
+	}
+	copy(sa.Addr[:], endpoint.IP.To4())
+
+	return (*(*[unix.SizeofSockaddrInet4]byte)(unsafe.Pointer(&sa)))[:], nil
 }
 
-// encodeAllowedIPs returns a function to encode allowed IP nested attributes.
-func encodeAllowedIPs(ipns []net.IPNet) func(ae *netlink.AttributeEncoder) error {
-	return func(ae *netlink.AttributeEncoder) error {
-		for i, ipn := range ipns {
-			if !isValidIP(ipn.IP) {
-				return fmt.Errorf("wglinux: invalid allowed IP: %s", ipn.IP.String())
-			}
-
-			family := uint16(unix.AF_INET6)
-			if !isIPv6(ipn.IP) {
-				// Make sure address is 4 bytes if IPv4.
-				family = unix.AF_INET
-				ipn.IP = ipn.IP.To4()
-			}
-
-			// Netlink arrays use type as an array index.
-			ae.Nested(uint16(i), func(nae *netlink.AttributeEncoder) error {
-				nae.Uint16(unix.WGALLOWEDIP_A_FAMILY, family)
-				nae.Bytes(unix.WGALLOWEDIP_A_IPADDR, ipn.IP)
-
-				ones, _ := ipn.Mask.Size()
-				nae.Uint8(unix.WGALLOWEDIP_A_CIDR_MASK, uint8(ones))
-				return nil
-			})
+// encodeAllowedIPs encodes allowed IP nested attributes.
+func encodeAllowedIPs(ae *netlink.AttributeEncoder, ipns []net.IPNet) error {
+	for i, ipn := range ipns {
+		if !isValidIP(ipn.IP) {
+			return fmt.Errorf("awgctrl: invalid allowed IP: %s", ipn.IP.String())
 		}
 
-		return nil
+		family := uint16(unix.AF_INET6)
+		if !isIPv6(ipn.IP) {
+			// Make sure address is 4 bytes if IPv4.
+			family = unix.AF_INET
+			ipn.IP = ipn.IP.To4()
+		}
+
+		// Netlink arrays use type as an array index.
+		ae.Nested(uint16(i), func(nae *netlink.AttributeEncoder) error {
+			nae.Uint16(unix.WGALLOWEDIP_A_FAMILY, family)
+			nae.Bytes(unix.WGALLOWEDIP_A_IPADDR, ipn.IP)
+
+			ones, _ := ipn.Mask.Size()
+			nae.Uint8(unix.WGALLOWEDIP_A_CIDR_MASK, uint8(ones))
+			return nil
+		})
 	}
+
+	return nil
 }
 
 // isValidIP determines if IP is a valid IPv4 or IPv6 address.
@@ -304,7 +292,7 @@ func parseAddr(ip *net.IP) func(b []byte) error {
 			copy(*ip, b)
 			return nil
 		default:
-			return fmt.Errorf("wglinux: unexpected IP address size: %d", len(b))
+			return fmt.Errorf("awgctrl: unexpected IP address size: %d", len(b))
 		}
 	}
 }
@@ -334,7 +322,7 @@ func parseSockaddr(endpoint *net.UDPAddr) func(b []byte) error {
 
 			return nil
 		default:
-			return fmt.Errorf("wglinux: unexpected sockaddr size: %d", len(b))
+			return fmt.Errorf("awgctrl: unexpected sockaddr size: %d", len(b))
 		}
 	}
 }
@@ -385,7 +373,7 @@ func parseTimespec(t *time.Time) func(b []byte) error {
 			sec = ts.Sec
 			nsec = ts.Nsec
 		default:
-			return fmt.Errorf("wglinux: unexpected timespec size: %d bytes, expected 8 or 16 bytes", len(b))
+			return fmt.Errorf("awgctrl: unexpected timespec size: %d bytes, expected 8 or 16 bytes", len(b))
 		}
 
 		// Only set fields if UNIX timestamp value is greater than 0, so the

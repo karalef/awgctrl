@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
+	// TODO: consider using the crypto/ecdh instead.
 	"golang.org/x/crypto/curve25519"
 )
 

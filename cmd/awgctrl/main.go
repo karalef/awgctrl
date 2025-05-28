@@ -1,8 +1,8 @@
 //go:build linux
 // +build linux
 
-// Command wgctrl is a testing utility for interacting with WireGuard via package
-// wgctrl.
+// Command awgctrl is a testing utility for interacting with amneziawg via package
+// awgctrl.
 package main
 
 import (
@@ -20,7 +20,7 @@ func main() {
 
 	c, _, err := awgctrl.New()
 	if err != nil {
-		log.Fatalf("failed to open wgctrl: %v", err)
+		log.Fatalf("failed to open awgctrl: %v", err)
 	}
 	defer c.Close()
 
